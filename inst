@@ -1,114 +1,146 @@
 #!/bin/bash
-# install script 2021-04-01
-# shellcheck disable=SC2002,SC2016,SC2129
-# SC2002: Useless cat
-# SC2016: Expressions don't expand in single quotes
-# SC2129: Consider not using cat > redirect
+# Arch install script for UEFI in virtual hardware. 2026-11-08
+# Note: Requires 20G minimum drive for install as currently configured. See: 'Partition variables' below.
+# Suggest using an ssh connection for using this script: https://wiki.archlinux.org/title/Install_Arch_Linux_via_SSH#
 
-####  FOR TESTING BACK TO BACK, QUICK SET UP A LOCAL PACMAN PACKAGE CACHE SERVER:
-####  ---------------------------------------------------------------------------------------------------------------------------------------
-####  Install darkhttpd 
-####  Symlink package cache directory for darkhttpd :	$ sudo ln -s  /var/cache/pacman/pkg/    /home/$USER/www/repo/
-####  Setup darkhttpd run:				$ darkhttpd /home/$USER/www/repo --port 8080
-####  Configure package server IP variable 'LPSP' below
-####  sudo pacman -Sw --needed base base-devel + <all other desired packages> 
-####  ---------------------------------------------------------------------------------------------------------------------------------------
+set -euo pipefail
+trap 'S="${?}"; if (( S != 0 )); then echo "${0} : Error on line ${LINENO} : ${BASH_COMMAND} : exit ${S}"; fi' ERR INT TERM
 
-set -uo pipefail
-trap 'S="${?}" ; echo "${0}" : Error on line "${LINENO}" : "${BASH_COMMAND}" ; exit "${S}"' ERR
+	## Prevent accidentally running on host system. ##
 
-	## Prevent accidentally running on my system!
-
-if 	[[ $HOSTNAME = Arch2014p9 ]]; then
-	echo " YOU REALLY DO NOT WANT TO RUN THIS "
+if 	[[ ! ${HOSTNAME} = archiso ]]; then
+	echo "Exit install if not running on Arch ISO."
 	exit
 fi
 
-#==========# User, password, hostname, editor, package server ip variables. #==========#
+Col_Ptr=$(echo -e "\033[1;96m:: Installer ==>\033[00m")
+Col_Cancel=$(echo -e "\033[0m")
+CacheServer="http://192.168.2.52:9129/repo/archlinux/\$repo/os/\$arch"
 
-URN="jeff"					## Username                  ##
-URP="test"					## User Password             ##
-RTP="test"					## Root Password             ##
-HTN="Arch2021p3"				## Hostname                  ##
-EDR="nano"					## Editor                    ##
-LPSP='Server = http://192.168.2.2:8080/'	## Local Package Server:Port ## Comment this out for none.
+#==========# User, password, hostname, editor variables. #==========#
+
+User_Name="jeff"
+User_Password="test"
+Root_Password="test"
+HostName="Arch-2026p11"
+Editor="nano"
 
 #==========# Partition variables. #==========#
 
-HDD="sda"		## set bootloader location. ##
-DDI="/dev/sda"		## set device for disklabel and installation. ##
-DLT="msdos"		## set MBR-disklabel type. ##
-ROOTP="/dev/sda1"	## set root partition. ##
-HOMEP="/dev/sda3"	## set home partition. ##
-SWAP="/dev/sda2"	## set swap partition. ##
+Part_Map_Spec="gpt"		## Partition map specification. ##
+Install_Dev="/dev/sda"		## Installation device. ##
 
-	umount "${HOMEP}" 2>/dev/null		|| /bin/true
-	umount "${ROOTP}" 2>/dev/null		|| /bin/true
-	swapoff "${SWAP}" 2>/dev/null		|| /bin/true
+ESP_Part="/dev/sda1"		## ESP partition. ##
+Root_Part="/dev/sda2"		## Root partition. ##
+Swap_Part="/dev/sda3"		## Swap partition. ##
+Home_Part="/dev/sda4"		## Home partition. ##
+
+Root_Size="10"			## Root partition size in whole GB.
+Swap_Size="3"			## Swap partition size in whole GB.
+Home_Size="5"			## Home partition 'minimum' size in whole GB.
+# Note: ESP partition size hard coded to 256M and only contains the Grub binary.
+
+#==========# Unmount partitions #==========#
+
+	umount "${Home_Part}"  2>/dev/null		|| /bin/true
+	umount "${ESP_Part}"   2>/dev/null		|| /bin/true
+	swapoff "${Swap_Part}" 2>/dev/null		|| /bin/true
+	umount "${Root_Part}"  2>/dev/null		|| /bin/true
 
 #==========# SETUP PARTITIONS AND MOUNTS #==========#
 
-Partition(){
+partition(){
 
-	parted "${DDI}" mklabel "$DLT"
-	parted "${DDI}" mkpart primary ext4 0% 70%
-	parted "${DDI}" set 1 boot on
-	parted "${DDI}" mkpart primary linux-swap 70% 80%
-	parted "${DDI}" mkpart primary ext4 80% 100%
+	## Calculate and check if device size is large enough. ##
+
+device_size=$(/usr/bin/lsblk -dn -b -o SIZE "${Install_Dev}" | awk '{print int($1 / 1000000000)}')
+min_size=$(( Root_Size + Home_Size + Swap_Size + 1 ))
+
+if	(( device_size < min_size )); then
+	echo; echo "${Col_Ptr} Error: Installation device must be at least ${min_size} GB (found ${device_size} GB). ${Col_Cancel}"
+	exit 1
+fi
+	echo; echo "${Col_Ptr} Installing Arch to ${Install_Dev}. ${Col_Cancel}"
+	echo "${Col_Ptr} To exit press [Ctrl]+[C]. ${Col_Cancel}"
+	sleep 4
+	echo "${Col_Ptr} Cleaning up any existing mounts, swap, and partition signatures on ${Install_Dev}... ${Col_Cancel}"
+	echo
+
+	## Remove any existing filesystem signatures or superblocks. ##
+
+	umount -R /mnt 2>/dev/null         || true
+	swapoff "${Swap_Part}" 2>/dev/null || true
+	wipefs -a -f "${Install_Dev}"
+
+	## Convert fixed GB sizes to MiB offsets (1 GB = 1024 MiB) ##
+
+	esp_end=256
+	root_end=$(( esp_end + (Root_Size * 1024) ))
+	swap_end=$(( root_end + (Swap_Size * 1024) ))
+
+	parted -s "${Install_Dev}" mklabel "${Part_Map_Spec}"
+	parted -s "${Install_Dev}" unit MiB mkpart ESP fat32 1 "${esp_end}"
+	parted -s "${Install_Dev}" set 1 esp on
+	parted -s "${Install_Dev}" unit MiB mkpart primary ext4 "${esp_end}" "${root_end}"
+	parted -s "${Install_Dev}" unit MiB mkpart primary linux-swap "${root_end}" "${swap_end}"
+	parted -s "${Install_Dev}" unit MiB mkpart primary ext4 "${swap_end}" 100%
 }
+
 formats(){
 
-	mkfs.ext4 "${ROOTP}"
-	mkfs.ext4 "${HOMEP}"
-	mkswap /dev/sda2
+	mkfs.fat -F32 "${ESP_Part}"
+	mkfs.ext4 -q "${Root_Part}"
+	mkfs.ext4 -q "${Home_Part}"
+	mkswap "${Swap_Part}"
 }
 
 mounts(){
 
-	mount  "${ROOTP}"	/mnt
-	mkdir -p		/mnt/home
-	mount  "${HOMEP}"	/mnt/home
-	swapon "${SWAP}"
-}
+	mount "${Root_Part}" /mnt
+	mkdir -p /mnt/boot/efi /mnt/home
+	mount "${ESP_Part}" /mnt/boot/efi
+	mount "${Home_Part}" /mnt/home
+	swapon "${Swap_Part}"
 
+	echo; echo "${Col_Ptr} Finished mounts function.... ${Col_Cancel}"
+	sleep 1
+}
 #==========# SETUP INSTALL ISO FOR RUNNING INSTALL SCRIPT #==========#
 
 setrepos(){
 
-	pacman -Sy 2>/dev/null
-	pacman -S --noconfirm --needed reflector wgetpaste moreutils
+	echo "${Col_Ptr} Adding pkgs to ISO needed for install script... ${Col_Cancel}"; echo
+	sleep 3
 
-	echo "${LPSP}"										> /etc/pacman.d/mirrorlist
-	echo "Running reflector may take some time..."
-	reflector --latest 5 --country 'United States' --protocol https --sort rate 2>/dev/null >> /etc/pacman.d/mirrorlist
-	echo; echo " mirrorlist in editor next" ; echo
-	sleep 5
+	pacman -Syy
+	pacman -S --noconfirm --needed nano wgetpaste moreutils reflector
 
-	cat /etc/pacman.d/mirrorlist | EDITOR="${EDR}" vipe | awk '{print}' >tmp && mv tmp /etc/pacman.d/mirrorlist
+	echo; echo "${Col_Ptr} Added local package server to top of ISO mirrorlist, below. ${Col_Cancel}"
+
+if	! grep -q "${CacheServer}" /etc/pacman.d/mirrorlist; then
+	sed -i "1s|^|${CacheServer}\n|" /etc/pacman.d/mirrorlist
+fi
+	echo "${Col_Ptr} -------------------- ${Col_Cancel}"; echo
+	head /etc/pacman.d/mirrorlist
+	echo; echo "${Col_Ptr} -------------------- ${Col_Cancel}"; echo
+	sleep 3
 }
-
 #==========# INSTALL PACKAGES #==========#
 
 install(){
 
 	## BASE VBOX INSTALL. EDIT LIST FOR INSTALLED PACKAGES ##
 
-	pacstrap /mnt   base linux grub wget nano openssh sudo polkit fbset terminus-font
-
-		# dhcpcd
-		# xorg-server xorg-xinit xterm xorg-fonts xorg-twm \
-		# polkit ttf-dejavu ttf-liberation leafpad \
-		# virtualbox-guest-utils \
-		# xfce4 xfce4-goodies gvfs \
-		# xorg-server xorg-xinit xterm xorg-fonts xorg-twm \
-		# linux-headers polkit ttf-dejavu ttf-liberation leafpad \
-		# virtualbox-guest-utils \
-		# xfce4 xfce4-goodies gvfs
+	pacstrap    /mnt base linux
+	arch-chroot /mnt pacman -S --noconfirm --needed grub efibootmgr wget nano openssh sudo terminus-font #\
+						 	#xorg-server xorg-xinit xfce4 gvfs \
+							#xterm ttf-dejavu ttf-liberation l3afpad \
+							#virtualbox-guest-utils linux-headers
+							#dhcpcd
 }
-
 #==========# CONFIGURE SYSTEM #==========#
 
-Configure(){
+configure_(){
 
 	genfstab -L /mnt > /mnt/etc/fstab
 
@@ -116,34 +148,33 @@ Configure(){
 	arch-chroot /mnt hwclock --systohc
 
 	echo "en_US.UTF-8 UTF-8" 						>> /mnt/etc/locale.gen
+
 	arch-chroot /mnt locale-gen
 
 	echo "LANG=en_US.UTF-8" 						>> /mnt/etc/locale.conf
 
 	echo "KEYMAP=us"     							>> /mnt/etc/vconsole.conf
-	echo "FONT=ter-118n" 							>> /mnt/etc/vconsole.conf
+	echo "FONT=ter-120b" 							>> /mnt/etc/vconsole.conf
 
-	echo "${HTN}" 								> /mnt/etc/hostname
+	echo "${HostName}" 							> /mnt/etc/hostname
 
 	echo '127.0.0.1  localhost'                 				>> /mnt/etc/hosts
 	echo '::1        localhost'                 				>> /mnt/etc/hosts
-	echo "127.0.1.1	 ${HTN}.localdomain ${HTN}" 				>> /mnt/etc/hosts
+	echo "127.0.1.1	 ${HostName}.localdomain ${HostName}" 			>> /mnt/etc/hosts
 
 #	arch-chroot /mnt systemctl enable dhcpcd
 
-	arch-chroot /mnt grub-install --target=i386-pc /dev/"${HDD}"
+	arch-chroot /mnt grub-install --target=x86_64-efi --efi-directory=/boot/efi --bootloader-id=GRUB --removable --recheck
 	arch-chroot /mnt grub-mkconfig -o 					/boot/grub/grub.cfg
 
-	arch-chroot /mnt useradd -m -G wheel -s /bin/bash "${URN}"
+	arch-chroot /mnt useradd -m -G wheel -s 				/bin/bash "${User_Name}"
 
-	### echo "root:${RTP}" | chpasswd -R /mnt ### BROKEN - replacement implemented 2021-03-30 ###
-
-	echo "${URN}:${URP}" | arch-chroot /mnt /usr/sbin/chpasswd	|| { echo "set password error" ; exit 1 ; }
-	echo   "root:${RTP}" | arch-chroot /mnt /usr/sbin/chpasswd	|| { echo "set password error" ; exit 2 ; }
+	echo "${User_Name}:${User_Password}" | arch-chroot /mnt /usr/sbin/chpasswd	|| { echo "set password error" ; exit 1 ; }
+	echo         "root:${Root_Password}" | arch-chroot /mnt /usr/sbin/chpasswd	|| { echo "set password error" ; exit 2 ; }
 
 	arch-chroot /mnt systemctl enable systemd-timesyncd.service
 
-	sed -i '/%wheel ALL=(ALL) ALL/s/^#//'					/mnt/etc/sudoers
+	sed -i '/%wheel ALL=(ALL:ALL) ALL/s/^#//'				/mnt/etc/sudoers
 
 	touch /mnt/etc/systemd/network/20-wired.network
 
@@ -157,28 +188,35 @@ Configure(){
 EOF
 	arch-chroot /mnt systemctl enable systemd-networkd
 	arch-chroot /mnt systemctl enable systemd-resolved
+	arch-chroot /mnt systemctl enable sshd
 
+	echo "nameserver 208.67.222.222 " 					>>/mnt/etc/resolv.conf
+	echo "nameserver 208.67.222.220 " 					>>/mnt/etc/resolv.conf
 
-	#### Added if statement to see if Xorg is installed and setup accordingle (WITH Xorg). ####
+	# Following prints local ip address above login prompt. Great for ssh sessions. #
+
+	echo ' \4' 								>> /mnt/etc/issue
+
+	#### if statement to check if Xorg is installed for setup. (WITH Xorg) ####
 
 if	[[ -e /mnt/etc/X11/xinit/xinitrc ]]; then
 
-	cp /mnt/etc/X11/xinit/xinitrc						/mnt/home/"${URN}"/.xinitrc
-	sed -i '/twm/s/^/#/g'							/mnt/home/"${URN}"/.xinitrc
-	sed -i '/xclock/s/^/#/g'      						/mnt/home/"${URN}"/.xinitrc
-	sed -i '/xterm/s/^/#/g'       						/mnt/home/"${URN}"/.xinitrc
-	echo 'exec startxfce4' >>     						/mnt/home/"${URN}"/.xinitrc
-	arch-chroot /mnt chown "${URN}"						/home/"${URN}"/.xinitrc
+	cp /mnt/etc/X11/xinit/xinitrc						/mnt/home/"${User_Name}"/.xinitrc
+	sed -i '/twm/s/^/#/g'							/mnt/home/"${User_Name}"/.xinitrc
+	sed -i '/xclock/s/^/#/g'      						/mnt/home/"${User_Name}"/.xinitrc
+	sed -i '/xterm/s/^/#/g'       						/mnt/home/"${User_Name}"/.xinitrc
+	echo 'exec startxfce4' >>     						/mnt/home/"${User_Name}"/.xinitrc
+	arch-chroot /mnt chown "${User_Name}"					/home/"${User_Name}"/.xinitrc
 
-	cp /mnt/etc/X11/xinit/xserverrc						/mnt/home/"${URN}"/.xserverrc
-	sed -i '/exec/s/^/#/g'							/mnt/home/"${URN}"/.xserverrc
-	echo 'exec /usr/bin/Xorg -keeptty -nolisten tcp "$@" vt"$XDG_VTNR"' >>  /mnt/home/"${URN}"/.xserverrc
-	arch-chroot /mnt chown "${URN}"						/home/"${URN}"/.xserverrc
+	cp /mnt/etc/X11/xinit/xserverrc						/mnt/home/"${User_Name}"/.xserverrc
+	sed -i '/exec/s/^/#/g'							/mnt/home/"${User_Name}"/.xserverrc
+	echo 'exec /usr/bin/Xorg -keeptty -nolisten tcp "$@" vt"$XDG_VTNR"' >>  /mnt/home/"${User_Name}"/.xserverrc
+	arch-chroot /mnt chown "${User_Name}"					/home/"${User_Name}"/.xserverrc
 	arch-chroot /mnt systemctl enable vboxservice.service
 
     else
 
-	#### (WITHOUT Xorg) Setup a service file to enlarge the vconsole resolution. ####
+	#### Setup a service file to enlarge the vconsole resolution. (WITHOUT Xorg) ####
 
 	touch /mnt/etc/systemd/system/display.service
 
@@ -198,133 +236,88 @@ if	[[ -e /mnt/etc/X11/xinit/xinitrc ]]; then
 EOF
 	arch-chroot /mnt systemctl enable display.service
 
-	echo ; echo "THIS IS A BASE, NO X INSTALL. KEEP THIS IN MIND FOR UPCOMING FILE CHECKS." ; echo
-	sleep 5
+	echo ; echo "${Col_Ptr} This is a base install without xorg-server or wayland. ${Col_Cancel}" ; echo
+	sleep 3
 fi
 }
 
 mesg(){
-
-	echo " The install is done except verifying and editing config files."
-	echo " Answering no here will exit, completing the install."
-	echo " Answering no after this will skip the named file/s."; echo
+	echo "${Col_Ptr}  The install is done except verifying and/or editing config files. ${Col_Cancel}"
+	echo "${Col_Ptr}  Select yes to review and/or edit config files. ${Col_Cancel}"
+	echo "${Col_Ptr}  Select no to exit, completing the install. ${Col_Cancel}"
 }
+#==========# STEP THROUGH CONFIG CHECKS #==========#
 
 asksure(){
 		echo -n " Proceed ? (Y/N)"
-		while read -r -n 1 -s answer 
+		while read -r -n 1 -s answer
 		do
-			if [[ $answer = [YyNn] ]] ; then 
+			if [[ $answer = [YyNn] ]] ; then
 			   [[ $answer = [Yy] ]] && echo " Answered Yes " && XX=0 && break
 			   [[ $answer = [Nn] ]] && echo " Answered No  " && XX=1 && break
 			fi
 		done
-	reset
+	reset >/dev/tty 2>&1
 }
+#==========# CHECK/EDIT CONFIG FILES #==========#
 
-#==========# CHECK CONFIG FILES WITH OPTION TO EDIT #==========#
+check_config() {
 
-checking1(){
-		clear
-		echo; echo " Checking ~/.xinitrc in ${EDR}"
-		asksure
-	if	[[ $XX = 0 ]]; then
-		cat /mnt/home/"${URN}"/.xinitrc | EDITOR="${EDR}" vipe | awk '{print}' >tmp && mv tmp /mnt/home/"${URN}"/.xinitrc
-		reset
-			checking2
-		else
-			checking2 
-	fi
-}
-checking2(){
-		clear
-		echo; echo " Checking ~/.xserverrc in ${EDR}"
-		asksure
-	if	[[ $XX = 0 ]]; then
-		cat /mnt/home/"${URN}"/.xserverrc | EDITOR="${EDR}" vipe | awk '{print}' >tmp && mv tmp  /mnt/home/"${URN}"/.xserverrc
-		reset
-			checking3
-		else
-			checking3 
-	fi
-}
-checking3(){
-		clear
-		echo; echo " Checking /etc/hosts in ${EDR}"
-		asksure
-	if	[[ $XX = 0 ]]; then
-		cat /mnt/etc/hosts | EDITOR="${EDR}" vipe | awk '{print}' >tmp && mv tmp  /mnt/etc/hosts
-		reset
-			checking4
-		else
-			checking4 
-	fi
-}
-checking4(){
-		clear
-		echo; echo " Checking /etc/sudoers in ${EDR} with visudo"
-		asksure 
-	if	[[ $XX = 0 ]]; then
-		cat /mnt/etc/sudoers | EDITOR="${EDR}" vipe | awk '{print}' >tmp && mv tmp  /mnt/etc/sudoers
-		EDITOR="${EDR}" visudo -c --file=/mnt/etc/sudoers
-		reset
-			checking5
-		else
-			checking5
-	fi
-}
-checking5(){
-		clear
-		echo; echo " Checking /etc/locale.gen in ${EDR}"
-		asksure 
-	if	[[ $XX = 0 ]]; then
-		cat /mnt/etc/locale.gen | EDITOR="${EDR}" vipe | awk '{print}' >tmp && mv tmp  /mnt/etc/locale.gen
-		reset
-			checking6
-		else
-			checking6
-	fi
-}
-checking6(){
-		clear
-		echo; echo " Checking /etc/locale.conf in ${EDR}"
-		asksure 
-	if	[[ $XX = 0 ]]; then
-		cat /mnt/etc/locale.conf | EDITOR="${EDR}" vipe | awk '{print}' >tmp && mv tmp  /mnt/etc/locale.conf
-		reset
-			XX=1
-	fi
-}
+local filepath="${1}"
+local desc="${2}"
 
+if	[[ -e "$filepath" ]]; then
+	clear >/dev/tty
+	echo; echo " Checking ${desc} in ${Editor}"
+	echo " Select yes to review/edit."
+	echo " Select no to skip forward to next file."
+	asksure
+
+       	if	[[ $XX = 0 ]]; then
+		cat "${filepath}" | EDITOR="${Editor}" vipe | awk '{print}' >tmp && mv tmp "${filepath}"
+      		reset >/dev/tty 2>&1
+	fi
+fi
+}
 #==========# UNMOUNT PARTITIONS  #==========#
 
 umnts(){
 
-	cp inst.log /mnt/home/"${URN}"/install.log
-
-	umount "${HOMEP}"
-	umount "${ROOTP}"
-	swapoff "${SWAP}"
+	umount "${ESP_Part}"		&& echo "${Col_Ptr} Unmount ESP ${Col_Cancel}"
+	umount "${Home_Part}"		&& echo "${Col_Ptr} Unmount Home ${Col_Cancel}"
+	swapoff "${Swap_Part}"		&& echo "${Col_Ptr} Swapoff ${Col_Cancel}"
+	umount "${Root_Part}"		&& echo "${Col_Ptr} Unmount Root ${Col_Cancel}"
 }
 
+mesg2(){
+	echo; echo "${Col_Ptr} Installation has completed. ${Col_Cancel}"
+	echo "${Col_Ptr} Set root: password to \"${Root_Password}\" ${Col_Cancel}"
+	echo "${Col_Ptr} Set user: \"${User_Name}\" password to \"${User_Password}\" ${Col_Cancel}"
+	echo "${Col_Ptr} Install log has been copied to new install: /home/${User_Name}/install.log ${Col_Cancel}"
+	echo "${Col_Ptr} To review the entire install process run: cat inst.log ${Col_Cancel}"; echo
+}
 #==========# Run Functions #==========#
 
 ## Group bracket below for logging ##
 {
-
-	Partition
+	partition
 	formats
 	mounts
 	setrepos
 	install
-	Configure
+	configure_
 	mesg
 	asksure
-	if [[ $XX = 0 ]]; then checking1 ; fi
+if	[[ $XX = 0 ]]; then
+	check_config "/mnt/home/${User_Name}/.xinitrc"		"${HOME}/.xinitrc"
+	check_config "/mnt/home/${User_Name}/.xserverrc"	"${HOME}/.xserverrc"
+	check_config "/mnt/etc/hosts"				"/etc/hosts"
+	check_config "/mnt/etc/sudoers"				"/etc/sudoers"
+	check_config "/mnt/etc/locale.gen"			"/etc/locale.gen"
+	check_config "/mnt/etc/vconsole.conf"			"/etc/vconsole.conf"
+	check_config "/mnt/etc/locale.conf"			"/etc/locale.conf"
+fi
+	cp inst.log /mnt/home/"${User_Name}"/install.log
 	umnts
-	echo ; echo " Install log available, run 'less inst.log'"
-	echo " and has been copied to new install /home/${URN}"/install.log ; echo
-
-#==========# Set logging #==========#
-
+	mesg2
 } |& tee inst.log

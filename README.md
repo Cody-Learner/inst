@@ -1,11 +1,12 @@
 
 # Arch install script
 
-For virtualized hardware only. <br>
+For virtualized hardware install. <br>
 Needs edited to suit requirements. <br>
 Will reformat/overwrite existing drives/partitions as is. <br>
+Suggest using an ssh connection for installation: https://wiki.archlinux.org/title/Install_Arch_Linux_via_SSH#
 
-From the Arch install iso:
+Run from the Arch install iso:
 
 Fetch the script: <br>
  curl https://raw.githubusercontent.com/Cody-Learner/inst/master/inst >inst <br>
@@ -22,6 +23,9 @@ To run: <br>
 <br>
 
 
+2026-11-08 UPDATE: <br>
+ * Rewrote script for UEFI hardware. 
+ * Consolidated the multiple numbered check_config() functions into one.
 
 
 2021-04-04 UPDATE: <br>
@@ -32,8 +36,6 @@ To run: <br>
  * Set up network to use systemd-networkd and systemd-resolved rather than dhcpcd. <br>
  * Setup custom systemd 'display.service' for fullscreen resolution console. <br>
  * Logging: /root/inst.log in live install medium and ~/install.log in new install. <br>
-
-
 
 
 2018-11-23: <br>
