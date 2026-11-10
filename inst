@@ -134,6 +134,7 @@ install(){
 	pacstrap    /mnt base linux
 	arch-chroot /mnt pacman -S --noconfirm --needed grub efibootmgr wget nano openssh sudo terminus-font #\
 						 	#xorg-server xorg-xinit xfce4 gvfs \
+							#network-manager-applet \
 							#xterm ttf-dejavu ttf-liberation l3afpad \
 							#virtualbox-guest-utils linux-headers
 							#dhcpcd
