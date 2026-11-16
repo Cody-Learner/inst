@@ -1,5 +1,5 @@
 #!/bin/bash
-# Arch install script for UEFI in virtual hardware. 2026-11-08
+# Arch install script for UEFI in virtual hardware. 2026-11-16
 # Note: Requires 20G minimum drive for install as currently configured. See: 'Partition variables' below.
 # Suggest using an ssh connection for using this script: https://wiki.archlinux.org/title/Install_Arch_Linux_via_SSH#
 
@@ -15,7 +15,7 @@ fi
 
 Col_Ptr=$(echo -e "\033[1;96m:: Installer ==>\033[00m")
 Col_Cancel=$(echo -e "\033[0m")
-CacheServer="http://192.168.2.52:9129/repo/archlinux/\$repo/os/\$arch"
+CacheServer="CacheServer = http://192.168.2.52:9129/repo/archlinux/\$repo/os/\$arch"
 
 #==========# User, password, hostname, editor variables. #==========#
 
@@ -131,13 +131,13 @@ install(){
 
 	## BASE VBOX INSTALL. EDIT LIST FOR INSTALLED PACKAGES ##
 
-	pacstrap    /mnt base linux
-	arch-chroot /mnt pacman -S --noconfirm --needed grub efibootmgr wget nano openssh sudo terminus-font #\
-						 	#xorg-server xorg-xinit xfce4 gvfs \
-							#network-manager-applet \
-							#xterm ttf-dejavu ttf-liberation l3afpad \
-							#virtualbox-guest-utils linux-headers
-							#dhcpcd
+	pacstrap /mnt base linux
+	arch-chroot /mnt pacman -S --noconfirm --needed grub efibootmgr sudo openssh          \
+							terminus-font wget nano              #\
+						 	# xorg-server xorg-xinit xfce4 gvfs    \
+							# network-manager-applet l3afpad       \
+							# xterm ttf-dejavu ttf-liberation      \
+							# virtualbox-guest-utils linux-headers
 }
 #==========# CONFIGURE SYSTEM #==========#
 
@@ -159,11 +159,9 @@ configure_(){
 
 	echo "${HostName}" 							> /mnt/etc/hostname
 
-	echo '127.0.0.1  localhost'                 				>> /mnt/etc/hosts
-	echo '::1        localhost'                 				>> /mnt/etc/hosts
 	echo "127.0.1.1	 ${HostName}.localdomain ${HostName}" 			>> /mnt/etc/hosts
 
-#	arch-chroot /mnt systemctl enable dhcpcd
+	sed -i '/^GRUB_CMDLINE_LINUX_DEFAULT=/s/ *\<quiet\>//g' /mnt/etc/default/grub
 
 	arch-chroot /mnt grub-install --target=x86_64-efi --efi-directory=/boot/efi --bootloader-id=GRUB --removable --recheck
 	arch-chroot /mnt grub-mkconfig -o 					/boot/grub/grub.cfg
@@ -177,28 +175,42 @@ configure_(){
 
 	sed -i '/%wheel ALL=(ALL:ALL) ALL/s/^#//'				/mnt/etc/sudoers
 
-	touch /mnt/etc/systemd/network/20-wired.network
-
-	cat <<- EOF 								> /mnt/etc/systemd/network/20-wired.network
+if	[[ -x /mnt/usr/bin/NetworkManager ]]; then
+	arch-chroot /mnt systemctl enable NetworkManager.service
+	arch-chroot /mnt systemctl enable NetworkManager-wait-online.service
+    else
+	cat <<- 'EOF' > /mnt/etc/systemd/network/20-wired.network
 	[Match]
-	Name=en*
-	Name=eth*
+	Name=en* eth*
 
 	[Network]
 	DHCP=yes
 EOF
-	arch-chroot /mnt systemctl enable systemd-networkd
-	arch-chroot /mnt systemctl enable systemd-resolved
-	arch-chroot /mnt systemctl enable sshd
+	arch-chroot /mnt systemctl enable systemd-networkd.service
+	arch-chroot /mnt systemctl enable systemd-networkd-wait-online.service
+	arch-chroot /mnt systemctl enable systemd-resolved.service
 
-	echo "nameserver 208.67.222.222 " 					>>/mnt/etc/resolv.conf
-	echo "nameserver 208.67.222.220 " 					>>/mnt/etc/resolv.conf
+    ln -sf ../run/systemd/resolve/stub-resolv.conf /mnt/etc/resolv.conf
+fi
 
-	# Following prints local ip address above login prompt. Great for ssh sessions. #
+	# Following prints local ip address, UN and PW above login prompt. #
 
-	echo ' \4' 								>> /mnt/etc/issue
+	echo '\4' 								 > /mnt/etc/issue
+	echo '\l' 								>> /mnt/etc/issue
+	echo "Username: ${User_Name}"						>> /mnt/etc/issue
+	echo "Password: ${User_Password}"					>> /mnt/etc/issue
 
-	#### if statement to check if Xorg is installed for setup. (WITH Xorg) ####
+	mkdir -p /mnt/etc/systemd/system/getty@tty1.service.d
+
+	cat << 'EOF' > /mnt/etc/systemd/system/getty@tty1.service.d/wait-network.conf
+	[Unit]
+	After=network-online.target
+	Wants=network-online.target
+
+	[Service]
+	TTYVTDisallocate=no
+EOF
+		#### if statement to check if Xorg is installed for setup. (WITH Xorg) ####
 
 if	[[ -e /mnt/etc/X11/xinit/xinitrc ]]; then
 
@@ -244,8 +256,8 @@ fi
 
 mesg(){
 	echo "${Col_Ptr}  The install is done except verifying and/or editing config files. ${Col_Cancel}"
-	echo "${Col_Ptr}  Select yes to review and/or edit config files. ${Col_Cancel}"
-	echo "${Col_Ptr}  Select no to exit, completing the install. ${Col_Cancel}"
+	echo "${Col_Ptr}  Type yes to review and/or edit config files. ${Col_Cancel}"
+	echo "${Col_Ptr}  Type no  to exit, completing the install. ${Col_Cancel}"
 }
 #==========# STEP THROUGH CONFIG CHECKS #==========#
 
@@ -253,9 +265,9 @@ asksure(){
 		echo -n " Proceed ? (Y/N)"
 		while read -r -n 1 -s answer
 		do
-			if [[ $answer = [YyNn] ]] ; then
-			   [[ $answer = [Yy] ]] && echo " Answered Yes " && XX=0 && break
-			   [[ $answer = [Nn] ]] && echo " Answered No  " && XX=1 && break
+			if [[ ${answer} = [YyNn] ]] ; then
+			   [[ ${answer} = [Yy] ]] && echo " Answered Yes " && XX=0 && break
+			   [[ ${answer} = [Nn] ]] && echo " Answered No  " && XX=1 && break
 			fi
 		done
 	reset >/dev/tty 2>&1
@@ -269,9 +281,10 @@ local desc="${2}"
 
 if	[[ -e "$filepath" ]]; then
 	clear >/dev/tty
-	echo; echo " Checking ${desc} in ${Editor}"
-	echo " Select yes to review/edit."
-	echo " Select no to skip forward to next file."
+	echo
+	echo " Checking ${desc} with ${Editor} in new install."
+	echo " Type yes to review/edit."
+	echo " Type no to skip forward to next file."
 	asksure
 
        	if	[[ $XX = 0 ]]; then
@@ -289,13 +302,14 @@ umnts(){
 	swapoff "${Swap_Part}"		&& echo "${Col_Ptr} Swapoff ${Col_Cancel}"
 	umount "${Root_Part}"		&& echo "${Col_Ptr} Unmount Root ${Col_Cancel}"
 }
+#==========# PRINT MESSAGE  #==========#
 
 mesg2(){
 	echo; echo "${Col_Ptr} Installation has completed. ${Col_Cancel}"
 	echo "${Col_Ptr} Set root: password to \"${Root_Password}\" ${Col_Cancel}"
 	echo "${Col_Ptr} Set user: \"${User_Name}\" password to \"${User_Password}\" ${Col_Cancel}"
 	echo "${Col_Ptr} Install log has been copied to new install: /home/${User_Name}/install.log ${Col_Cancel}"
-	echo "${Col_Ptr} To review the entire install process run: cat inst.log ${Col_Cancel}"; echo
+	echo "${Col_Ptr} To review the entire install process now, run: cat inst.log ${Col_Cancel}"; echo
 }
 #==========# Run Functions #==========#
 
@@ -309,9 +323,9 @@ mesg2(){
 	configure_
 	mesg
 	asksure
-if	[[ $XX = 0 ]]; then
-	check_config "/mnt/home/${User_Name}/.xinitrc"		"${HOME}/.xinitrc"
-	check_config "/mnt/home/${User_Name}/.xserverrc"	"${HOME}/.xserverrc"
+if	[[ ${XX} = 0 ]]; then
+	check_config "/mnt/home/${User_Name}/.xinitrc"		"/home/${User_Name}/.xinitrc"
+	check_config "/mnt/home/${User_Name}/.xserverrc"	"/home/${User_Name}/.xserverrc"
 	check_config "/mnt/etc/hosts"				"/etc/hosts"
 	check_config "/mnt/etc/sudoers"				"/etc/sudoers"
 	check_config "/mnt/etc/locale.gen"			"/etc/locale.gen"

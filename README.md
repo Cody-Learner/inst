@@ -22,6 +22,15 @@ To run: <br>
 
 <br>
 
+2026-11-16 UPDATE: <br>
+* Fixed `CacheServer` variable.
+* Remove `quiet` from kenrel command line in grub.
+* Added if statement to set up `networkmanager` rather than systemd network if installed.
+* Let network management system handle `/etc/resolv.conf`.
+* Add/display username and password to `/etc/issue`.
+* Add systemd `network-online.target` for displaying ip in `/etc/issue`.
+* Fixed printed path for checking `~/.xinitrc` and `~/.xserverrc`.
+
 
 2026-11-08 UPDATE: <br>
  * Rewrote script for UEFI hardware. 
